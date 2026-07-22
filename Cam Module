@@ -1,0 +1,570 @@
+return function(Holder)
+    --Cluster: Module Setup & Initialization : 1
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local UserInputService = game:GetService("UserInputService")
+    local Lighting = game:GetService("Lighting")
+    local Workspace = game:GetService("Workspace")
+
+    local LocalPlayer = Players.LocalPlayer
+    local Camera = Workspace.CurrentCamera
+
+    -- ScreenGui Target
+    local ScreenGui = Holder:FindFirstAncestorOfClass("ScreenGui")
+    if not ScreenGui then
+        ScreenGui = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChildOfClass("ScreenGui")
+    end
+
+
+    --Cluster: Original State Storage & Variables : 2
+    local OrigState = {
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        FogEnd = Lighting.FogEnd,
+        FogStart = Lighting.FogStart,
+        CameraType = Camera.CameraType,
+        FieldOfView = Camera.FieldOfView,
+        MinZoom = LocalPlayer.CameraMinZoomDistance,
+        MaxZoom = LocalPlayer.CameraMaxZoomDistance,
+    }
+
+    local Config = {
+        LockPlayers = false,
+        LockNPCs = false,
+        ShowFOV = false,
+        FOVRadius = 80,       -- Small default radius
+        LockStrength = 0.3,   -- Medium default strength
+        IsPOV = false,        -- false = 3rd Person, true = 1st Person
+        FogRemoved = false,
+        IsNight = false,
+        CustomBrightness = OrigState.Brightness
+    }
+
+    local ActiveConnections = {}
+
+    -- Holder Layout Setup
+    local HolderLayout = Instance.new("UIListLayout")
+    HolderLayout.Parent = Holder
+    HolderLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    HolderLayout.Padding = UDim.new(0, 6)
+
+    local HolderPadding = Instance.new("UIPadding")
+    HolderPadding.PaddingTop = UDim.new(0, 4)
+    HolderPadding.PaddingLeft = UDim.new(0, 4)
+    HolderPadding.PaddingRight = UDim.new(0, 4)
+    HolderPadding.PaddingBottom = UDim.new(0, 4)
+    HolderPadding.Parent = Holder
+
+
+    --Cluster: Target Detection & Camera Lock Engine : 3
+    local currentTargetPart = nil
+    local lastScanTime = 0
+
+    local function GetClosestTarget(isNPC)
+        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        local closestTarget = nil
+        local shortestDist = Config.FOVRadius
+
+        if isNPC then
+            for _, obj in ipairs(Workspace:GetChildren()) do
+                if obj:IsA("Model") and not Players:GetPlayerFromCharacter(obj) then
+                    local hum = obj:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local targetPart = obj:FindFirstChild("Head") or obj:FindFirstChild("HumanoidRootPart")
+                        if targetPart then
+                            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                            if onScreen then
+                                local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                                if dist <= shortestDist then
+                                    shortestDist = dist
+                                    closestTarget = targetPart
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local char = player.Character
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local targetPart = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                        if targetPart then
+                            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                            if onScreen then
+                                local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                                if dist <= shortestDist then
+                                    shortestDist = dist
+                                    closestTarget = targetPart
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return closestTarget
+    end
+
+    local function GetTarget(isNPC)
+        local now = tick()
+        if currentTargetPart and currentTargetPart.Parent then
+            local hum = currentTargetPart.Parent:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(currentTargetPart.Position)
+                if onScreen then
+                    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                    if dist <= Config.FOVRadius then
+                        return currentTargetPart
+                    end
+                end
+            end
+        end
+
+        if now - lastScanTime > 0.12 then
+            lastScanTime = now
+            currentTargetPart = GetClosestTarget(isNPC)
+        end
+
+        return currentTargetPart
+    end
+
+
+    --Cluster: Floating Screen Controls Creation : 4
+    local FloatContainer = Instance.new("Frame")
+    FloatContainer.Name = "CamFloatContainer"
+    FloatContainer.Size = UDim2.new(0, 110, 0, 34)
+    FloatContainer.Position = UDim2.new(1, -125, 0, 60)
+    FloatContainer.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
+    FloatContainer.BorderSizePixel = 0
+    FloatContainer.Visible = false
+    FloatContainer.Parent = ScreenGui
+
+    local FloatCorner = Instance.new("UICorner")
+    FloatCorner.CornerRadius = UDim.new(0, 17)
+    FloatCorner.Parent = FloatContainer
+
+    local FloatStroke = Instance.new("UIStroke")
+    FloatStroke.Color = Color3.fromRGB(50, 60, 80)
+    FloatStroke.Thickness = 1.5
+    FloatStroke.Parent = FloatContainer
+
+    local FloatLayout = Instance.new("UIListLayout")
+    FloatLayout.FillDirection = Enum.FillDirection.Horizontal
+    FloatLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    FloatLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    FloatLayout.Padding = UDim.new(0, 5)
+    FloatLayout.Parent = FloatContainer
+
+    -- Multi-Touch Safe Floating Bar Dragging
+    local floatDragging = false
+    local floatDragInput = nil
+    local floatDragStart = nil
+    local floatStartPos = nil
+
+    table.insert(ActiveConnections, FloatContainer.InputBegan:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and not floatDragging then
+            floatDragging = true
+            floatDragInput = input
+            floatDragStart = input.Position
+            floatStartPos = FloatContainer.Position
+        end
+    end))
+
+    table.insert(ActiveConnections, UserInputService.InputChanged:Connect(function(input)
+        if floatDragging and input == floatDragInput then
+            local delta = input.Position - floatDragStart
+            local camera = workspace.CurrentCamera
+            local viewportSize = camera and camera.ViewportSize or Vector2.new(1280, 720)
+
+            local newX = math.clamp(floatStartPos.X.Offset + delta.X, 0, viewportSize.X - FloatContainer.AbsoluteSize.X)
+            local newY = math.clamp(floatStartPos.Y.Offset + delta.Y, 0, viewportSize.Y - FloatContainer.AbsoluteSize.Y)
+
+            FloatContainer.Position = UDim2.fromOffset(newX, newY)
+        end
+    end))
+
+    table.insert(ActiveConnections, UserInputService.InputEnded:Connect(function(input)
+        if input == floatDragInput then
+            floatDragging = false
+            floatDragInput = nil
+        end
+    end))
+
+    -- Floating Buttons: 👤 Player, 🤖 NPC, 👁 POV
+    local FloatPlayerBtn = Instance.new("TextButton")
+    FloatPlayerBtn.Size = UDim2.new(0, 28, 0, 28)
+    FloatPlayerBtn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+    FloatPlayerBtn.Text = "👤"
+    FloatPlayerBtn.TextSize = 13
+    FloatPlayerBtn.Parent = FloatContainer
+
+    local FloatPCorner = Instance.new("UICorner")
+    FloatPCorner.CornerRadius = UDim.new(1, 0)
+    FloatPCorner.Parent = FloatPlayerBtn
+
+    local FloatNPCBtn = Instance.new("TextButton")
+    FloatNPCBtn.Size = UDim2.new(0, 28, 0, 28)
+    FloatNPCBtn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+    FloatNPCBtn.Text = "🤖"
+    FloatNPCBtn.TextSize = 13
+    FloatNPCBtn.Parent = FloatContainer
+
+    local FloatNCorner = Instance.new("UICorner")
+    FloatNCorner.CornerRadius = UDim.new(1, 0)
+    FloatNCorner.Parent = FloatNPCBtn
+
+    local FloatPOVBtn = Instance.new("TextButton")
+    FloatPOVBtn.Size = UDim2.new(0, 28, 0, 28)
+    FloatPOVBtn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+    FloatPOVBtn.Text = "👁"
+    FloatPOVBtn.TextSize = 13
+    FloatPOVBtn.Parent = FloatContainer
+
+    local FloatPOVCorner = Instance.new("UICorner")
+    FloatPOVCorner.CornerRadius = UDim.new(1, 0)
+    FloatPOVCorner.Parent = FloatPOVBtn
+
+
+    --Cluster: FOV Overlay Render Engine : 5
+    local FOVCircle = Instance.new("Frame")
+    FOVCircle.Name = "FOVCircle"
+    FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    FOVCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+    FOVCircle.Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2)
+    FOVCircle.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    FOVCircle.BackgroundTransparency = 0.8
+    FOVCircle.BorderSizePixel = 0
+    FOVCircle.Visible = false
+    FOVCircle.ZIndex = 5
+    FOVCircle.Parent = ScreenGui
+
+    local FOVCorner = Instance.new("UICorner")
+    FOVCorner.CornerRadius = UDim.new(1, 0)
+    FOVCorner.Parent = FOVCircle
+
+    local FOVStroke = Instance.new("UIStroke")
+    FOVStroke.Color = Color3.fromRGB(255, 255, 255)
+    FOVStroke.Transparency = 0.7
+    FOVStroke.Thickness = 1.5
+    FOVStroke.Parent = FOVCircle
+
+
+    --Cluster: UI Element Builder Helpers : 6
+    local updatePlayerToggleVisual = nil
+    local updateNPCToggleVisual = nil
+    local updatePOVToggleVisual = nil
+
+    local function UpdateFloatingState()
+        FloatPlayerBtn.BackgroundColor3 = Config.LockPlayers and Color3.fromRGB(0, 150, 230) or Color3.fromRGB(40, 45, 60)
+        FloatNPCBtn.BackgroundColor3 = Config.LockNPCs and Color3.fromRGB(0, 150, 230) or Color3.fromRGB(40, 45, 60)
+        FloatPOVBtn.BackgroundColor3 = Config.IsPOV and Color3.fromRGB(0, 180, 100) or Color3.fromRGB(40, 45, 60)
+
+        FloatContainer.Visible = (Config.LockPlayers or Config.LockNPCs or Config.IsPOV)
+    end
+
+    local function SetPlayerLock(state)
+        Config.LockPlayers = state
+        if state then
+            Config.LockNPCs = false
+            if updateNPCToggleVisual then updateNPCToggleVisual(false) end
+        end
+        if updatePlayerToggleVisual then updatePlayerToggleVisual(Config.LockPlayers) end
+        UpdateFloatingState()
+    end
+
+    local function SetNPCLock(state)
+        Config.LockNPCs = state
+        if state then
+            Config.LockPlayers = false
+            if updatePlayerToggleVisual then updatePlayerToggleVisual(false) end
+        end
+        if updateNPCToggleVisual then updateNPCToggleVisual(Config.LockNPCs) end
+        UpdateFloatingState()
+    end
+
+    local function SetPOVMode(state)
+        Config.IsPOV = state
+        if Config.IsPOV then
+            LocalPlayer.CameraMinZoomDistance = 0.5
+            LocalPlayer.CameraMaxZoomDistance = 0.5
+        else
+            LocalPlayer.CameraMinZoomDistance = OrigState.MinZoom
+            LocalPlayer.CameraMaxZoomDistance = OrigState.MaxZoom
+        end
+        if updatePOVToggleVisual then updatePOVToggleVisual(Config.IsPOV) end
+        UpdateFloatingState()
+    end
+
+    -- Toggle Creator Helper
+    local function CreateToggle(parent, text, defaultVal, callback)
+        local Btn = Instance.new("TextButton")
+        Btn.Size = UDim2.new(1, 0, 0, 22)
+        Btn.BackgroundColor3 = defaultVal and Color3.fromRGB(0, 140, 220) or Color3.fromRGB(28, 32, 42)
+        Btn.Text = (defaultVal and "  [ON] " or "  [OFF] ") .. text
+        Btn.TextColor3 = defaultVal and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 190, 210)
+        Btn.TextSize = 10
+        Btn.Font = Enum.Font.SourceSansBold
+        Btn.TextXAlignment = Enum.TextXAlignment.Left
+        Btn.Parent = parent
+
+        local Corner = Instance.new("UICorner")
+        Corner.CornerRadius = UDim.new(0, 4)
+        Corner.Parent = Btn
+
+        local Stroke = Instance.new("UIStroke")
+        Stroke.Color = Color3.fromRGB(45, 52, 68)
+        Stroke.Thickness = 1
+        Stroke.Parent = Btn
+
+        local state = defaultVal
+
+        local function UpdateVisuals(newState)
+            state = newState
+            Btn.BackgroundColor3 = state and Color3.fromRGB(0, 140, 220) or Color3.fromRGB(28, 32, 42)
+            Btn.Text = (state and "  [ON] " or "  [OFF] ") .. text
+            Btn.TextColor3 = state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 190, 210)
+        end
+
+        table.insert(ActiveConnections, Btn.MouseButton1Click:Connect(function()
+            state = not state
+            UpdateVisuals(state)
+            callback(state)
+        end))
+
+        return Btn, UpdateVisuals
+    end
+
+    -- Slider Creator Helper (Very Small Label directly on top)
+    local function CreateSlider(parent, labelText, minVal, maxVal, defaultVal, callback)
+        local Frame = Instance.new("Frame")
+        Frame.Size = UDim2.new(1, 0, 0, 28)
+        Frame.BackgroundTransparency = 1
+        Frame.Parent = parent
+
+        local Label = Instance.new("TextLabel")
+        Label.Size = UDim2.new(1, 0, 0, 10)
+        Label.Position = UDim2.new(0, 2, 0, -2)
+        Label.BackgroundTransparency = 1
+        Label.Text = labelText:upper() .. " (" .. string.format("%.1f", defaultVal) .. ")"
+        Label.TextColor3 = Color3.fromRGB(150, 160, 180)
+        Label.TextSize = 8
+        Label.Font = Enum.Font.SourceSansBold
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        Label.Parent = Frame
+
+        local Track = Instance.new("Frame")
+        Track.Size = UDim2.new(1, 0, 0, 12)
+        Track.Position = UDim2.new(0, 0, 0, 12)
+        Track.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+        Track.BorderSizePixel = 0
+        Track.Parent = Frame
+
+        local TrackCorner = Instance.new("UICorner")
+        TrackCorner.CornerRadius = UDim.new(0, 4)
+        TrackCorner.Parent = Track
+
+        local Fill = Instance.new("Frame")
+        local initPct = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
+        Fill.Size = UDim2.new(initPct, 0, 1, 0)
+        Fill.BackgroundColor3 = Color3.fromRGB(0, 140, 220)
+        Fill.BorderSizePixel = 0
+        Fill.Parent = Track
+
+        local FillCorner = Instance.new("UICorner")
+        FillCorner.CornerRadius = UDim.new(0, 4)
+        FillCorner.Parent = Fill
+
+        local isDragging = false
+        local activeInput = nil
+
+        local function UpdateValue(input)
+            local posX = input.Position.X - Track.AbsolutePosition.X
+            local pct = math.clamp(posX / Track.AbsoluteSize.X, 0, 1)
+            Fill.Size = UDim2.new(pct, 0, 1, 0)
+            local val = minVal + (maxVal - minVal) * pct
+            Label.Text = labelText:upper() .. " (" .. string.format("%.1f", val) .. ")"
+            callback(val)
+        end
+
+        table.insert(ActiveConnections, Track.InputBegan:Connect(function(input)
+            if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and not isDragging then
+                isDragging = true
+                activeInput = input
+                UpdateValue(input)
+            end
+        end))
+
+        table.insert(ActiveConnections, UserInputService.InputChanged:Connect(function(input)
+            if isDragging and input == activeInput then
+                UpdateValue(input)
+            end
+        end))
+
+        table.insert(ActiveConnections, UserInputService.InputEnded:Connect(function(input)
+            if input == activeInput then
+                isDragging = false
+                activeInput = nil
+            end
+        end))
+
+        return Frame
+    end
+
+    -- Action Button Helper
+    local function CreateActionBtn(parent, text, color, callback)
+        local Btn = Instance.new("TextButton")
+        Btn.Size = UDim2.new(1, 0, 0, 20)
+        Btn.BackgroundColor3 = color or Color3.fromRGB(36, 42, 56)
+        Btn.Text = text
+        Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Btn.TextSize = 10
+        Btn.Font = Enum.Font.SourceSansBold
+        Btn.Parent = parent
+
+        local Corner = Instance.new("UICorner")
+        Corner.CornerRadius = UDim.new(0, 4)
+        Corner.Parent = Btn
+
+        table.insert(ActiveConnections, Btn.MouseButton1Click:Connect(callback))
+        return Btn
+    end
+
+
+    --Cluster: Module UI Construction : 7
+    -- Floating Bar Button Click Handlers
+    table.insert(ActiveConnections, FloatPlayerBtn.MouseButton1Click:Connect(function()
+        SetPlayerLock(not Config.LockPlayers)
+    end))
+
+    table.insert(ActiveConnections, FloatNPCBtn.MouseButton1Click:Connect(function()
+        SetNPCLock(not Config.LockNPCs)
+    end))
+
+    table.insert(ActiveConnections, FloatPOVBtn.MouseButton1Click:Connect(function()
+        SetPOVMode(not Config.IsPOV)
+    end))
+
+    -- 1. CamButton(👤)
+    _, updatePlayerToggleVisual = CreateToggle(Holder, "CamButton (👤 Player Lock)", Config.LockPlayers, function(state)
+        SetPlayerLock(state)
+    end)
+
+    -- 2. CamButton(🤖)
+    _, updateNPCToggleVisual = CreateToggle(Holder, "CamButton (🤖 NPC Lock)", Config.LockNPCs, function(state)
+        SetNPCLock(state)
+    end)
+
+    -- 3. POV Button
+    _, updatePOVToggleVisual = CreateToggle(Holder, "POV Swap (1st / 3rd Person)", Config.IsPOV, function(state)
+        SetPOVMode(state)
+    end)
+
+    -- 4. Show FOV Toggle
+    CreateToggle(Holder, "Show FOV Overlay", Config.ShowFOV, function(state)
+        Config.ShowFOV = state
+        FOVCircle.Visible = state
+    end)
+
+    -- 5. FOV Slider (Default Small: 80px)
+    CreateSlider(Holder, "FOV Radius", 30, 250, Config.FOVRadius, function(val)
+        Config.FOVRadius = val
+        FOVCircle.Size = UDim2.fromOffset(val * 2, val * 2)
+    end)
+
+    -- 6. Lock Strength Slider (Default Medium: 0.3)
+    CreateSlider(Holder, "Lock Strength", 0.05, 1.0, Config.LockStrength, function(val)
+        Config.LockStrength = val
+    end)
+
+    -- 7. Brightness Slider (Middle is current initial game brightness)
+    local baseBrightness = math.max(OrigState.Brightness, 0.5)
+    CreateSlider(Holder, "Brightness", 0, baseBrightness * 2, baseBrightness, function(val)
+        Config.CustomBrightness = val
+        Lighting.Brightness = val
+    end)
+
+    -- 8. Fog Toggle
+    CreateToggle(Holder, "Fog Removal", Config.FogRemoved, function(state)
+        Config.FogRemoved = state
+        if state then
+            Lighting.FogEnd = 9e9
+        else
+            Lighting.FogEnd = OrigState.FogEnd
+            Lighting.FogStart = OrigState.FogStart
+        end
+    end)
+
+    -- 9. Night / Day Toggle
+    CreateToggle(Holder, "Night / Day Mode", Config.IsNight, function(state)
+        Config.IsNight = state
+        Lighting.ClockTime = state and 0 or 12
+    end)
+
+    -- 10. Roblox Cam Default
+    CreateActionBtn(Holder, "Roblox Cam Default", Color3.fromRGB(45, 65, 95), function()
+        Camera.CameraType = Enum.CameraType.Custom
+        Camera.FieldOfView = 70
+        LocalPlayer.CameraMinZoomDistance = 0.5
+        LocalPlayer.CameraMaxZoomDistance = 400
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+
+        SetPlayerLock(false)
+        SetNPCLock(false)
+        SetPOVMode(false)
+    end)
+
+    -- 11. Cam Restore
+    CreateActionBtn(Holder, "Cam Restore (Initial State)", Color3.fromRGB(110, 45, 50), function()
+        Lighting.Brightness = OrigState.Brightness
+        Lighting.ClockTime = OrigState.ClockTime
+        Lighting.FogEnd = OrigState.FogEnd
+        Lighting.FogStart = OrigState.FogStart
+        Camera.CameraType = OrigState.CameraType
+        Camera.FieldOfView = OrigState.FieldOfView
+        LocalPlayer.CameraMinZoomDistance = OrigState.MinZoom
+        LocalPlayer.CameraMaxZoomDistance = OrigState.MaxZoom
+
+        SetPlayerLock(false)
+        SetNPCLock(false)
+        SetPOVMode(false)
+    end)
+
+
+    --Cluster: Render Loop & Cleanup Handler : 8
+    -- Smooth Camera Tracking Loop
+    table.insert(ActiveConnections, RunService.RenderStepped:Connect(function()
+        if Config.LockPlayers or Config.LockNPCs then
+            local targetPart = GetTarget(Config.LockNPCs)
+            if targetPart then
+                local camPos = Camera.CFrame.Position
+                local targetPos = targetPart.Position
+                local desiredCFrame = CFrame.lookAt(camPos, targetPos)
+                Camera.CFrame = Camera.CFrame:Lerp(desiredCFrame, Config.LockStrength)
+            end
+        end
+    end))
+
+    -- Return Cleanup Function
+    return function()
+        for _, conn in ipairs(ActiveConnections) do
+            if conn and conn.Connected then
+                pcall(function() conn:Disconnect() end)
+            end
+        end
+        table.clear(ActiveConnections)
+
+        if FloatContainer then FloatContainer:Destroy() end
+        if FOVCircle then FOVCircle:Destroy() end
+
+        -- Restore Zoom limits on unmount
+        LocalPlayer.CameraMinZoomDistance = OrigState.MinZoom
+        LocalPlayer.CameraMaxZoomDistance = OrigState.MaxZoom
+    end
+end
